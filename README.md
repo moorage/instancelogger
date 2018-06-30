@@ -18,14 +18,17 @@ import (
 	"github.com/moorage/instancelogger"
 )
 
-instanceLogger, err := instancelogger.New(
+instanceLogger := instancelogger.New(
   &projectID,
   optionalClientOption,
   optionalWaitGroup,
 )
 
 // Once you know your topic name
-instanceLogger.Init(errorsTopicName, optionalInstanceName)
+err := instanceLogger.Init(errorsTopicName, optionalInstanceName, optionalProjectID)
+if err != nil {
+	instanceLogger.Fatal(err)
+}
 
 // Report an error
 instanceLogger.Error(fmt.Error("oops"))

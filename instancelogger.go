@@ -10,10 +10,9 @@ import (
 	"runtime/debug"
 	"sync"
 
+	"cloud.google.com/go/compute/metadata"
 	"cloud.google.com/go/pubsub"
 	"google.golang.org/api/option"
-
-	"cloud.google.com/go/compute/metadata"
 )
 
 // InstanceLogger is a general way to report errors to a google pubsub service.
@@ -39,26 +38,23 @@ type ErrorTopicMessage struct {
 
 // New creats a InstanceLogger *without a topic yet*.  Be sure to call Init()
 // if projectID is nil, attempts to find it from the instance metadata
-func New(optionalProjectID *string, clientOption option.ClientOption, waitGroup *sync.WaitGroup) (*InstanceLogger, error) {
-	il := &InstanceLogger{
-		projectID:    optionalProjectID,
+func New(clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
+	return &InstanceLogger{
 		clientOption: clientOption,
 		waitGroup:    waitGroup,
 	}
-	il.ctx, il.cancelFunc = context.WithCancel(context.Background())
-	var client *pubsub.Client
-	var err error
-	if clientOption != nil {
-		client, err = pubsub.NewClient(il.ctx, *optionalProjectID, clientOption)
-	} else {
-		client, err = pubsub.NewClient(il.ctx, *optionalProjectID)
-	}
+}
 
-	if err != nil {
-		return nil, err
+// Init actually starts publishing to a topic.  If this is not set, errors will only go to Stderr
+// If instanceName and/or projectID are nil, will have tried to use the instance metadata
+func (il *InstanceLogger) Init(errorTopicName string, optionalInstanceName *string, optionalProjectID *string) error {
+	il.errorTopicName = &errorTopicName
+	if optionalInstanceName != nil {
+		il.instanceName = optionalInstanceName
 	}
-
-	il.client = client
+	if optionalProjectID != nil {
+		il.projectID = optionalProjectID
+	}
 
 	c := metadata.NewClient(
 		&http.Client{
@@ -68,36 +64,45 @@ func New(optionalProjectID *string, clientOption option.ClientOption, waitGroup 
 			},
 		},
 	)
+
 	if optionalProjectID == nil {
 		foundProjectID, perr := c.ProjectID()
 		if perr != nil {
 			if !perr.(net.Error).Timeout() { // if timeout, just ignore
-				return nil, perr
+				return perr
 			}
 		} else {
 			il.projectID = &foundProjectID
 		}
 	}
-	foundInstanceName, err := c.InstanceName()
-	if err != nil {
-		if !err.(net.Error).Timeout() { // if timeout, just ignore
-			return nil, err
-		}
+
+	il.ctx, il.cancelFunc = context.WithCancel(context.Background())
+	var client *pubsub.Client
+	var err error
+	if il.clientOption != nil {
+		client, err = pubsub.NewClient(il.ctx, *il.projectID, il.clientOption)
 	} else {
-		il.instanceName = &foundInstanceName
+		client, err = pubsub.NewClient(il.ctx, *il.projectID)
+	}
+	if err != nil {
+		return err
 	}
 
-	return il, nil
-}
-
-// Init actually starts publishing to a topic.  If this is not set, errors will only go to Stderr
-// If instanceName is nil, will have tried to use the instance metadata
-func (il *InstanceLogger) Init(errorTopicName string, instanceName *string) {
-	il.errorTopicName = &errorTopicName
-	if instanceName != nil {
-		il.instanceName = instanceName
-	}
+	il.client = client
 	il.topic = il.client.Topic(errorTopicName)
+
+	if optionalInstanceName == nil {
+		foundInstanceName, err := c.InstanceName()
+		if err != nil {
+			if !err.(net.Error).Timeout() { // if timeout, just ignore
+				return err
+			}
+		} else {
+			il.instanceName = &foundInstanceName
+		}
+	}
+
+	return nil
 }
 
 // Error tries to report to pubsub, otherwise just prints to Stderr
