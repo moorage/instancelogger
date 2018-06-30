@@ -35,4 +35,8 @@ instanceLogger.Fatal(fmt.Error("oops"))
 
 // Clean up nicely when done (topic publisher uses a goroutine)
 instanceLogger.Stop()
+
+
+// If you have a wait group, you can wait until instanceLogger has completed all remaining publishing
+optionalWaitGroup.Wait()
 ```
