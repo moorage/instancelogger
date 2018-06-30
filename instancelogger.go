@@ -39,9 +39,9 @@ type ErrorTopicMessage struct {
 
 // New creats a InstanceLogger *without a topic yet*.  Be sure to call Init()
 // if projectID is nil, attempts to find it from the instance metadata
-func New(projectID *string, clientOption option.ClientOption, waitGroup *sync.WaitGroup) (*InstanceLogger, error) {
+func New(optionalProjectID *string, clientOption option.ClientOption, waitGroup *sync.WaitGroup) (*InstanceLogger, error) {
 	il := &InstanceLogger{
-		projectID:    projectID,
+		projectID:    optionalProjectID,
 		clientOption: clientOption,
 		waitGroup:    waitGroup,
 	}
@@ -49,9 +49,9 @@ func New(projectID *string, clientOption option.ClientOption, waitGroup *sync.Wa
 	var client *pubsub.Client
 	var err error
 	if clientOption != nil {
-		client, err = pubsub.NewClient(il.ctx, *projectID, clientOption)
+		client, err = pubsub.NewClient(il.ctx, *optionalProjectID, clientOption)
 	} else {
-		client, err = pubsub.NewClient(il.ctx, *projectID)
+		client, err = pubsub.NewClient(il.ctx, *optionalProjectID)
 	}
 
 	if err != nil {
@@ -63,12 +63,12 @@ func New(projectID *string, clientOption option.ClientOption, waitGroup *sync.Wa
 	c := metadata.NewClient(
 		&http.Client{
 			Transport: userAgentTransport{
-				userAgent: "greepy-renderfarm",
+				userAgent: "moorage/instancelogger",
 				base:      http.DefaultTransport,
 			},
 		},
 	)
-	if projectID == nil {
+	if optionalProjectID == nil {
 		foundProjectID, perr := c.ProjectID()
 		if perr != nil {
 			if !perr.(net.Error).Timeout() { // if timeout, just ignore
