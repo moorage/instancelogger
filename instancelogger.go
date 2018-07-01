@@ -9,11 +9,14 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/compute/metadata"
 	"cloud.google.com/go/pubsub"
 	"google.golang.org/api/option"
 )
+
+var singleton *InstanceLogger
 
 // InstanceLogger is a general way to report errors to a google pubsub service.
 // Call New() and then Init().  Call Stop() when done.
@@ -34,6 +37,18 @@ type ErrorTopicMessage struct {
 	Error        string  `json:"error"`
 	Trace        string  `json:"trace"`
 	InstanceName *string `json:"instanceName"`
+}
+
+// NewSingleton calls New and sets instancelogger's singleton instance to this.  Convenient if you
+// want one global instancelogger for the whole app.  Also returns it.
+func NewSingleton(clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
+	singleton = New(clientOption, waitGroup)
+	return singleton
+}
+
+// Singleton returns the global instancelogger.  You need to have called NewSingleton first
+func Singleton() *InstanceLogger {
+	return singleton
 }
 
 // New creats a InstanceLogger *without a topic yet*.  Be sure to call Init()
@@ -62,6 +77,7 @@ func (il *InstanceLogger) Init(errorTopicName string, optionalInstanceName *stri
 				userAgent: "moorage/instancelogger",
 				base:      http.DefaultTransport,
 			},
+			Timeout: 2 * time.Second,
 		},
 	)
 
@@ -111,7 +127,7 @@ func (il *InstanceLogger) Error(err error) {
 		il.waitGroup.Add(1)
 	}
 	if il.topic == nil {
-		log.Printf("[ERROR] %+v\n", err)
+		log.Printf("[ERROR(TOPIC-NOT-SET)] %+v\n", err)
 
 		if il.waitGroup != nil {
 			il.waitGroup.Done()
@@ -140,9 +156,9 @@ func (il *InstanceLogger) Error(err error) {
 	})
 	id, err := result.Get(il.ctx)
 	if err != nil {
-		log.Printf("[ERROR] %+v\n", err)
+		log.Printf("[INSTANCELOGGER-ERROR] couldn't il.topic.Publish to topic(%+v): %+v {\"original_message\"=%q}\n", il.topic, err, errorMsg)
 	} else {
-		log.Printf("[REPORTED_ERR(%s)] %s\n", id, errorMsg)
+		log.Printf("[ERROR-REPORTED(%s)] %s\n", id, errorMsg)
 	}
 
 	if il.waitGroup != nil {
