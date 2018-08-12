@@ -1,6 +1,6 @@
 # InstanceLogger
 
-A general way to report errors to a google pubsub service.
+A general way to report errors to a google logging (stackdriver) service.
 
 ## Setup
 

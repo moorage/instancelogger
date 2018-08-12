@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/logging"
 	"google.golang.org/api/option"
 )
 
@@ -26,14 +26,14 @@ type InstanceLogger struct {
 	projectID      *string
 	ctx            context.Context
 	cancelFunc     context.CancelFunc
-	client         *pubsub.Client
+	client         *logging.Client
 	clientOption   option.ClientOption
 	waitGroup      *sync.WaitGroup
-	topic          *pubsub.Topic
+	logger         *logging.Logger
 }
 
-// ErrorTopicMessage represents a pubsub topic message for an error for use in json unmarshalling
-type ErrorTopicMessage struct {
+// ErrorMessage represents a pubsub topic message for an error for use in json unmarshalling
+type ErrorMessage struct {
 	Error        string  `json:"error"`
 	Trace        string  `json:"trace"`
 	InstanceName *string `json:"instanceName"`
@@ -60,7 +60,7 @@ func New(clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceL
 	}
 }
 
-// Init actually starts publishing to a topic.  If this is not set, errors will only go to Stderr
+// Init actually starts publishing to a topic.  If this is not called, errors will only go to Stderr
 // If instanceName and/or projectID are nil, will have tried to use the instance metadata
 func (il *InstanceLogger) Init(errorTopicName string, optionalInstanceName *string, optionalProjectID *string) error {
 	il.errorTopicName = &errorTopicName
@@ -93,19 +93,19 @@ func (il *InstanceLogger) Init(errorTopicName string, optionalInstanceName *stri
 	}
 
 	il.ctx, il.cancelFunc = context.WithCancel(context.Background())
-	var client *pubsub.Client
+
+	var client *logging.Client
 	var err error
 	if il.clientOption != nil {
-		client, err = pubsub.NewClient(il.ctx, *il.projectID, il.clientOption)
+		client, err = logging.NewClient(il.ctx, *il.projectID, il.clientOption)
 	} else {
-		client, err = pubsub.NewClient(il.ctx, *il.projectID)
+		client, err = logging.NewClient(il.ctx, *il.projectID)
 	}
 	if err != nil {
 		return err
 	}
-
 	il.client = client
-	il.topic = il.client.Topic(errorTopicName)
+	il.logger = client.Logger(errorTopicName)
 
 	if optionalInstanceName == nil {
 		foundInstanceName, err := c.InstanceName()
@@ -126,8 +126,8 @@ func (il *InstanceLogger) Error(err error) {
 	if il.waitGroup != nil {
 		il.waitGroup.Add(1)
 	}
-	if il.topic == nil {
-		log.Printf("[ERROR(TOPIC-NOT-SET)] %+v\n", err)
+	if il.logger == nil {
+		log.Printf("[ERROR:LOGGING-NOT-INIT'ED] %+v\n", err)
 
 		if il.waitGroup != nil {
 			il.waitGroup.Done()
@@ -135,31 +135,15 @@ func (il *InstanceLogger) Error(err error) {
 		return
 	}
 
-	var errorMsg string
-	if il.instanceName != nil {
-		errorMsg = fmt.Sprintf(
-			"{\"error\": \"%v\", \"trace\":\"%v\",\"instanceName\":\"%s\"}",
-			err,
-			string(debug.Stack()),
-			*il.instanceName,
-		)
-	} else {
-		errorMsg = fmt.Sprintf(
-			"{\"error\": \"%v\", \"trace\":\"%v\",\"instanceName\": null}",
-			err,
-			string(debug.Stack()),
-		)
+	errorMsg := ErrorMessage{
+		Error:        fmt.Sprintf("%v", err),
+		Trace:        string(debug.Stack()),
+		InstanceName: il.instanceName,
 	}
 
-	result := il.topic.Publish(il.ctx, &pubsub.Message{
-		Data: []byte(errorMsg),
-	})
-	id, err := result.Get(il.ctx)
-	if err != nil {
-		log.Printf("[INSTANCELOGGER-ERROR] couldn't il.topic.Publish to topic(%+v): %+v {\"original_message\"=%q}\n", il.topic, err, errorMsg)
-	} else {
-		log.Printf("[ERROR-REPORTED(%s)] %s\n", id, errorMsg)
-	}
+	// Adds an entry to the log buffer.
+	il.logger.Log(logging.Entry{Payload: errorMsg})
+	log.Printf("[ERROR:REPORTED] %+v\n", errorMsg)
 
 	if il.waitGroup != nil {
 		il.waitGroup.Done()
@@ -174,11 +158,13 @@ func (il *InstanceLogger) Fatal(err error) {
 
 // Stop Stop()s the topic and calls the cancel function if available
 func (il *InstanceLogger) Stop() {
-	if il.topic != nil {
-		il.topic.Stop()
-	}
-	if il.cancelFunc != nil {
+	// Closes the client and flushes the buffer to Stackdriver
+	if il.client != nil {
+		il.client.Close()
+		il.client = nil
+	} else if il.cancelFunc != nil {
 		il.cancelFunc()
+		il.cancelFunc = nil
 	}
 }
 
