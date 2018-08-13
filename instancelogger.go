@@ -153,6 +153,7 @@ func (il *InstanceLogger) Error(err error) {
 // Fatal calls Err and os.Exit(1)
 func (il *InstanceLogger) Fatal(err error) {
 	il.Error(err)
+	il.Stop()
 	os.Exit(1)
 }
 
