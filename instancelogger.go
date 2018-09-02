@@ -2,6 +2,7 @@ package instancelogger
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -21,15 +22,16 @@ var singleton *InstanceLogger
 // InstanceLogger is a general way to report errors to a google pubsub service.
 // Call New() and then Init().  Call Stop() when done.
 type InstanceLogger struct {
-	errorTopicName *string
-	instanceName   *string
-	projectID      *string
-	ctx            context.Context
-	cancelFunc     context.CancelFunc
-	client         *logging.Client
-	clientOption   option.ClientOption
-	waitGroup      *sync.WaitGroup
-	logger         *logging.Logger
+	errorTopicName   *string
+	instanceName     *string
+	projectID        *string
+	stdoutAndErrOnly bool
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	client           *logging.Client
+	clientOption     option.ClientOption
+	waitGroup        *sync.WaitGroup
+	logger           *logging.Logger
 }
 
 // ErrorMessage represents a pubsub topic message for an error for use in json unmarshalling
@@ -41,8 +43,8 @@ type ErrorMessage struct {
 
 // NewSingleton calls New and sets instancelogger's singleton instance to this.  Convenient if you
 // want one global instancelogger for the whole app.  Also returns it.
-func NewSingleton(clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
-	singleton = New(clientOption, waitGroup)
+func NewSingleton(stdoutAndErrOnly bool, clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
+	singleton = New(stdoutAndErrOnly, clientOption, waitGroup)
 	return singleton
 }
 
@@ -53,10 +55,11 @@ func Singleton() *InstanceLogger {
 
 // New creats a InstanceLogger *without a topic yet*.  Be sure to call Init()
 // if projectID is nil, attempts to find it from the instance metadata
-func New(clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
+func New(stdoutAndErrOnly bool, clientOption option.ClientOption, waitGroup *sync.WaitGroup) *InstanceLogger {
 	return &InstanceLogger{
-		clientOption: clientOption,
-		waitGroup:    waitGroup,
+		stdoutAndErrOnly: stdoutAndErrOnly,
+		clientOption:     clientOption,
+		waitGroup:        waitGroup,
 	}
 }
 
@@ -126,7 +129,7 @@ func (il *InstanceLogger) Error(err error) {
 	if il.waitGroup != nil {
 		il.waitGroup.Add(1)
 	}
-	if il.logger == nil {
+	if !il.stdoutAndErrOnly && il.logger == nil {
 		log.Printf("[ERROR:LOGGING-NOT-INIT'ED] %+v\n", err)
 
 		if il.waitGroup != nil {
@@ -142,12 +145,41 @@ func (il *InstanceLogger) Error(err error) {
 	}
 
 	// Adds an entry to the log buffer.
-	il.logger.Log(logging.Entry{Payload: errorMsg})
-	log.Printf("[ERROR:REPORTED] %+v\n", errorMsg)
+	if il.stdoutAndErrOnly {
+		il.printStderrMsg(&errorMsg)
+	} else {
+		il.logger.Log(logging.Entry{Payload: errorMsg})
+		log.Printf("[ERROR:REPORTED] %+v\n", errorMsg)
+	}
 
 	if il.waitGroup != nil {
 		il.waitGroup.Done()
 	}
+}
+
+type stderrMessage struct {
+	Timestamp      string
+	Error          *ErrorMessage
+	ErrorTopicName *string
+	InstanceName   *string
+	ProjectID      *string
+}
+
+func (il *InstanceLogger) printStderrMsg(errMsg *ErrorMessage) {
+	emsg := stderrMessage{
+		Timestamp:      time.Now().Format("2006/01/02 15:04:05"),
+		Error:          errMsg,
+		ErrorTopicName: il.errorTopicName,
+		InstanceName:   il.instanceName,
+		ProjectID:      il.projectID,
+	}
+	b, err := json.Marshal(emsg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "InstanceLogger had error writing error(%+v): %+v\n", emsg, err)
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "%s\n", b)
 }
 
 // Fatal calls Err and os.Exit(1)
